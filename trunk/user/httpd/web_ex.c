@@ -55,6 +55,7 @@
 #include "common.h"
 #include "nvram_x.h"
 #include "httpd.h"
+#include "dbapi.h"
 
 #define GROUP_FLAG_REFRESH 	0
 #define GROUP_FLAG_DELETE 	1
@@ -72,10 +73,15 @@ static int wl_modified = 0;
 static int rt_modified = 0;
 static u64 restart_needed_bits = 0;
 
-static char post_buf[32768] = {0};
+//static char post_buf[32768] = {0};
+static char post_buf[65535] = {0};
+static char post_buf_backup[65535] = {0};
+static char post_json_buf[65535] = {0};
 static char next_host[128] = {0};
 static char SystemCmd[128] = {0};
 static int  group_del_map[MAX_GROUP_COUNT+2];
+
+extern void unescape(char *s);
 
 extern struct evDesc events_desc[];
 extern int auth_nvram_changed;
@@ -1993,9 +1999,149 @@ static int shadowsocks_action_hook(int eid, webs_t wp, int argc, char **argv)
 		notify_rc(RCN_RESTART_SS_TUNNEL);
 	} else if (!strcmp(ss_action, "Update_gfwlist")) {
 		notify_rc(RCN_RESTART_GFWLIST_UPD);
+	}else if (!strcmp(ss_action, "Update_dlink")) {
+		notify_rc(RCN_RESTART_DLINK);
+	}else if (!strcmp(ss_action, "Reset_dlink")) {
+		notify_rc(RCN_RESTART_REDLINK);
 	}
+	
 	websWrite(wp, "<script>restart_needed_time(%d);</script>\n", needed_seconds);
 	return 0;
+}
+
+static int
+applydb_cgi(webs_t wp, char *urlPrefix, char *webDir, int arg,
+		char *url, char *path, char *query)
+{
+	char *action_mode;
+	char *action_script;
+	char dbjson[100][9999];
+	char dbvar[2048];
+	char dbval[9999];
+	char notify_cmd[128];
+	char db_cmd[128];
+	int i, j;
+	char *result = NULL;
+	char *temp = NULL;
+	char *name = websGetVar(wp, "p","");
+	char scPath[128];
+	char *post_db_buf = post_json_buf;
+
+	action_mode = websGetVar(wp, "action_mode", "");
+	action_script = websGetVar(wp, "action_script", "");
+	char userm[] = "deleting";
+	
+	dbclient client;
+	dbclient_start(&client);
+	if (strlen(name) <= 0) {
+		printf("No \"name\"!\n");
+	}
+	if ( !strcmp("", post_db_buf)){
+		//get
+		sprintf(post_db_buf, "%s", post_buf_backup+1);
+		unescape(post_db_buf);
+		//logmessage("HTTPD", "url: %s,%s", post_db_buf, name);
+		strcpy(post_json_buf, post_db_buf);
+		result = strtok( post_json_buf, "&" );
+		i =0;
+	while( result != NULL )
+	{
+		if (result!=NULL)
+		{
+		strcpy(dbjson[i], result);
+		i++;
+			result = strtok( NULL, "&" );
+		}
+	}
+	for (j =0; j < i; j++)
+	{
+		if(!strncasecmp(dbjson[j], name, strlen(name))){
+				memset(dbvar,'\0',sizeof(dbvar));
+				memset(dbval,'\0',sizeof(dbval));
+				temp=strstr(dbjson[j], "=");
+				strcpy(dbval, temp+1);
+				strncpy(dbvar, dbjson[j], strlen(dbjson[j])-strlen(temp));
+			//logmessage("HTTPD", "name: %s post: %s", dbvar, userm);
+			if(strcmp(dbval,userm) == 0)
+				doSystem("dbus remove %s", dbvar);
+			else
+				doSystem("dbus set %s='%s'", dbvar, dbval);
+		}
+	}
+	} else {
+	//post
+	unescape(post_db_buf);
+	//logmessage("HTTPD", "name: %s post: %s", name, post_json_buf);
+	//logmessage("HTTPD", "name: %s post: %s", name, post_db_buf);
+	strcpy(post_json_buf, post_db_buf);
+	result = strtok( post_json_buf, "&" );
+	i =0;
+	while( result != NULL )
+	{
+		if (result!=NULL)
+		{
+		strcpy(dbjson[i], result);
+		i++;
+			result = strtok( NULL, "&" );
+		}
+	}
+	for (j =0; j < i; j++)
+	{
+		if(!strncasecmp(dbjson[j], name, strlen(name))){
+				memset(dbvar,'\0',sizeof(dbvar));
+				memset(dbval,'\0',sizeof(dbval));
+				temp=strstr(dbjson[j], "=");
+				strcpy(dbval, temp+1);
+				strncpy(dbvar, dbjson[j], strlen(dbjson[j])-strlen(temp));
+			//logmessage("HTTPD", "name: %s post: %s", dbvar, dbval);
+			if(strcmp(dbval,userm) == 0)
+				doSystem("dbus remove %s", dbvar);
+			else
+				doSystem("dbus set %s='%s'", dbvar, dbval);
+		}
+	}
+	}
+	dbclient_end(&client);
+	return 0;
+}
+
+static void
+do_applydb_cgi(char *url, FILE *stream)
+{
+    //applydb_cgi(url, stream);
+	applydb_cgi(stream, NULL, NULL, 0, url, NULL, NULL);
+}
+
+static int db_print(dbclient* client, webs_t wp, char* prefix, char* key, char* value) {
+	websWrite(wp,"o[\"%s\"]=\'%s\';\n", key, value);
+	return 0;
+}
+
+static void
+do_dbconf(char *url, FILE *stream)
+{
+	char *name = NULL;
+	char * delim = ",";
+	char *pattern = websGetVar(wp, "p","");
+	char *dup_pattern = strdup(pattern);
+	char *sepstr = dup_pattern;
+	dbclient client;
+	dbclient_start(&client);
+	if(strstr(sepstr,delim)) {
+		for(name = strsep(&sepstr, delim); name != NULL; name = strsep(&sepstr, delim)) {
+			websWrite(stream,"var db_%s=(function() {\nvar o={};\n", name);
+
+			dbclient_list(&client, name, stream, db_print);
+			websWrite(stream,"return o;\n})();\n" );
+		}
+	} else {
+		name= strdup(pattern);
+		websWrite(stream,"var db_%s=(function() {\nvar o={};\n", name);
+		dbclient_list(&client, name, stream, db_print);
+		websWrite(stream,"return o;\n})();\n" );
+	}
+	free(dup_pattern);
+	dbclient_end(&client);
 }
 
 static int shadowsocks_status_hook(int eid, webs_t wp, int argc, char **argv)
@@ -2044,7 +2190,7 @@ static int rules_count_hook(int eid, webs_t wp, int argc, char **argv)
 	websWrite(wp, "function chnroute_count() { return '%s';}\n", count);
 #if defined(APP_SHADOWSOCKS)
 	memset(count, 0, sizeof(count));
-	fstream = popen("grep ^ipset /etc/storage/gfwlist/gfwlist_list.conf |wc -l","r");
+	fstream = popen("cat /etc/storage/gfwlist/gfwlist_list.conf |wc -l","r");
 	if(fstream) {
 		fgets(count, sizeof(count), fstream);
 		pclose(fstream);
@@ -2454,6 +2600,12 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 #else
 	int has_http_ssl = 0;
 #endif
+#if defined (SUPPORT_OPENSSL_EC)
+	int has_openssl_ec = 1;
+#else
+	int has_openssl_ec = 0;
+#endif
+
 #if defined (SUPPORT_DDNS_SSL)
 	int has_ddns_ssl = 1;
 #else
@@ -2597,6 +2749,7 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		"function support_ipv4_ppe() { return %d;}\n"
 		"function support_peap_ssl() { return %d;}\n"
 		"function support_http_ssl() { return %d;}\n"
+		"function support_openssl_ec() { return %d;}\n"
 		"function support_ddns_ssl() { return %d;}\n"
 		"function support_min_vlan() { return %d;}\n"
 		"function support_max_conn() { return %d;}\n"
@@ -2634,6 +2787,7 @@ ej_firmware_caps_hook(int eid, webs_t wp, int argc, char **argv)
 		has_peap_ssl,
 		has_http_ssl,
 		has_ddns_ssl,
+		has_openssl_ec,
 		MIN_EXT_VLAN_VID,
 		max_conn,
 		has_mtd_rwfs,
@@ -3389,12 +3543,12 @@ apply_cgi(const char *url, webs_t wp)
 		int sys_result = 1;
 #if defined(APP_OPENVPN)
 		char *common_name = websGetVar(wp, "common_name", "");
-		int rsa_bits = atoi(websGetVar(wp, "rsa_bits", "1024"));
+		char *rsa_bits = websGetVar(wp, "rsa_bits", "1024");
 		int days_valid = atoi(websGetVar(wp, "days_valid", "365"));
 		if (strlen(common_name) < 1)
 			common_name = "client@ovpn";
 		if (get_login_safe())
-			sys_result = doSystem("/sbin/ovpn_export_client '%s' %d %d", common_name, rsa_bits, days_valid);
+			sys_result = doSystem("/sbin/ovpn_export_client '%s' %s %d", common_name, rsa_bits, days_valid);
 #endif
 		websWrite(wp, "{\"sys_result\": %d}", sys_result);
 		return 0;
@@ -3404,12 +3558,12 @@ apply_cgi(const char *url, webs_t wp)
 		int sys_result = 1;
 #if defined(APP_OPENVPN)
 		char *common_name = websGetVar(wp, "common_name", "");
-		int rsa_bits = atoi(websGetVar(wp, "rsa_bits", "1024"));
+		char *rsa_bits = websGetVar(wp, "rsa_bits", "1024");
 		int days_valid = atoi(websGetVar(wp, "days_valid", "365"));
 		if (strlen(common_name) < 1)
 			common_name = "OpenVPN Server";
 		if (get_login_safe())
-			sys_result = doSystem("/usr/bin/openvpn-cert.sh %s -n '%s' -b %d -d %d", "server", common_name, rsa_bits, days_valid);
+			sys_result = doSystem("/usr/bin/openvpn-cert.sh %s -n '%s' -b %s -d %d", "server", common_name, rsa_bits, days_valid);
 #endif
 		websWrite(wp, "{\"sys_result\": %d}", sys_result);
 		return 0;
@@ -3419,12 +3573,12 @@ apply_cgi(const char *url, webs_t wp)
 		int sys_result = 1;
 #if defined(SUPPORT_HTTPS)
 		char *common_name = websGetVar(wp, "common_name", "");
-		int rsa_bits = atoi(websGetVar(wp, "rsa_bits", "1024"));
+		char *rsa_bits = websGetVar(wp, "rsa_bits", "1024");
 		int days_valid = atoi(websGetVar(wp, "days_valid", "365"));
 		if (strlen(common_name) < 1)
 			common_name = nvram_safe_get("lan_ipaddr_t");
 		if (get_login_safe())
-			sys_result = doSystem("/usr/bin/https-cert.sh -n '%s' -b %d -d %d", common_name, rsa_bits, days_valid);
+			sys_result = doSystem("/usr/bin/https-cert.sh -n '%s' -b %s -d %d", common_name, rsa_bits, days_valid);
 #endif
 		websWrite(wp, "{\"sys_result\": %d}", sys_result);
 		return 0;
@@ -3750,6 +3904,39 @@ do_uncgi_query(const char *query)
 		init_cgi(post_buf);
 }
 
+static void do_html_post_and_get(char *url, FILE *stream, int len, char *boundary){
+	char *query = NULL;
+
+	init_cgi(NULL);
+
+	memset(post_buf, 0, sizeof(post_buf));
+	memset(post_buf_backup, 0, sizeof(post_buf));
+	memset(post_json_buf, 0, sizeof(post_json_buf));
+
+	if (fgets(post_buf, MIN(len+1, sizeof(post_buf)), stream)){
+		len -= strlen(post_buf);
+
+		while (len--)
+			(void)fgetc(stream);
+	}
+	sprintf(post_json_buf, "%s", post_buf);
+
+	query = url;
+	query = strsep(&query, "?");
+
+	if (query && strlen(query) > 0){
+		if (strlen(post_buf) > 0)
+			sprintf(post_buf_backup, "?%s&%s", post_buf, query);
+		else
+			sprintf(post_buf_backup, "?%s", query);
+		sprintf(post_buf, "%s", post_buf_backup+1);
+	}
+	else if (strlen(post_buf) > 0)
+		sprintf(post_buf_backup, "?%s", post_buf);
+	//websScan(post_buf_backup);
+	init_cgi(post_buf);
+}
+
 static void
 do_html_apply_post(const char *url, FILE *stream, int clen, char *boundary)
 {
@@ -3909,6 +4096,12 @@ static char syslog_txt[] =
 "filename=syslog.txt"
 ;
 
+static char no_cache_IE7[] =
+"Cache-Control: no-cache\r\n"
+"Pragma: no-cache\r\n"
+"Expires: 0"
+;
+
 static char no_cache_IE[] =
 "X-UA-Compatible: IE=edge\r\n"
 "Cache-Control: no-store, no-cache, must-revalidate\r\n"
@@ -3951,7 +4144,7 @@ static void
 do_kp_crt_file(const char *url, FILE *stream)
 {
     dump_file(stream, "/etc/storage/koolproxy/ca.crt");
-	fputs("\r\n", stream); /* terminator */
+	fputs("\r\n", stream);
 }
 #endif
 
@@ -4013,6 +4206,8 @@ struct mime_handler mime_handlers[] = {
 	/* no-cached POST objects */
 	{ "update.cgi*", "text/javascript", no_cache_IE, do_html_apply_post, do_update_cgi, 1 },
 	{ "apply.cgi*", "text/html", no_cache_IE, do_html_apply_post, do_apply_cgi, 1 },
+	{ "applydb.cgi*", "text/html", no_cache_IE7, do_html_post_and_get, do_applydb_cgi, 1 },
+	{ "dbconf", "text/javascript", no_cache_IE, do_html_apply_post, do_dbconf, 0 },
 
 	{ "upgrade.cgi*",    "text/html", no_cache_IE, do_upgrade_fw_post, do_upgrade_fw_cgi, 1 },
 	{ "restore_nv.cgi*", "text/html", no_cache_IE, do_restore_nv_post, do_restore_nv_cgi, 1 },

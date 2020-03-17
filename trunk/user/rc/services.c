@@ -345,6 +345,14 @@ void update_gfwlist(void){
 	eval("/bin/sh","-c","/usr/bin/update_gfwlist.sh force &");
 }
 
+void update_dlink(void){
+	eval("/bin/sh","-c","/usr/bin/update_dlink.sh start &");
+}
+
+void reset_dlink(void){
+	eval("/bin/sh","-c","/usr/bin/update_dlink.sh reset &");
+}
+
 #endif
 
 #if defined(APP_VLMCSD)
@@ -720,6 +728,8 @@ start_services_once(int is_ap_mode)
 		start_xupnpd(IFNAME_BR);
 #endif
 	}
+
+doSystem("/usr/sbin/skipd -d /etc/storage/db");
 
 #if defined(APP_SCUT)
 	start_scutclient();

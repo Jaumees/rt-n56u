@@ -1,12 +1,14 @@
-##2020.02.23##
-* 增加定时重启功能,入口在系统管理页面
-* 更改ssp绕过大陆模式使用pdnsd进行解析,加载cdn域名走国内dns(此功能和smartdns不能同时工作)
-* 去除adbyby plus adb规则，改成加载hosts规则
-* 同步最新smartdns源码
-* 更改了一下koolproxy脚本，看还会不会出现重启无法启动的问题，如果还不行就重写脚本吧。
-* 更改开机插件启动统一由脚本控制，检测是否联网再进行启动
-* 加入AdguardHome(从github上下载运行文件)
-* web界面一些微调
+##2020.03.15##
+* 完全抛弃jq，增加支持lua脚本，SSP订阅采用Lean大的脚本修改而来，速度杠杠的。
+* 增加定时更新订阅
+* SSP:用dns2tcp代替pdnsd,增加chinadns-ng用在绕过大陆模式
+* 更新的SSP源码可能或多或少有问题，可以加群反馈。PS最近真的太忙了，可能修复时间会慢一点
+* 功能会慢慢加回去，所以不要问为什么没有了...
+* adbyby plus+增加anti-AD规则
+* 重新加回VPN菜单在首页显示，如需关闭可进菜单定制页面关闭。
+* 更改adguardhome下载地址为CDN地址。
+* 升级openssl为1.1.1d
+* 更多更新请自行查看commit
 
 ##往期更新日志##
 *https://github.com/chongshengB/rt-n56u/blob/master/changelog-old.md
